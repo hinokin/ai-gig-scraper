@@ -25,13 +25,18 @@ const GITHUB_JSON_URL =
 
 const SHEET_NAME = "案件一覧";
 // results.json のキー順に対応
-const HEADERS = ["取得日", "ソース", "案件名", "報酬種別", "報酬", "締切", "残日数", "URL", "ヒット語"];
+const HEADERS = ["取得日", "ソース", "案件名", "優先度", "報酬種別", "報酬", "締切", "残日数", "URL", "ヒット語", "優先スコア"];
 
-// 色設定
+// 色設定（締切の近さ）
 const COLOR_URGENT      = "#FFCDD2"; const COLOR_URGENT_TEXT  = "#B71C1C"; // 残3日以内
 const COLOR_SOON        = "#FFF3E0"; const COLOR_SOON_TEXT    = "#E65100"; // 残4〜7日
 const COLOR_UNKNOWN     = "#EEEEEE"; const COLOR_UNKNOWN_TEXT = "#757575"; // 残日数不明
 const COLOR_NORMAL_TEXT = "#000000";
+
+// 色設定（優先度）— 締切の色より優先して適用し、高単価・スキルアップ案件を一目で目立たせる
+const COLOR_PRIORITY_TOP  = "#FFD54F"; // 🔥⭐ 高単価×スキルアップ（金色）
+const COLOR_PRIORITY_HIGH = "#FFECB3"; // 🔥 高単価
+const COLOR_PRIORITY_SKILL= "#C8E6C9"; // ⭐ スキルアップ
 
 // ============================================================
 // メイン（トリガーから毎日呼ばれる）
@@ -82,15 +87,7 @@ function checkJobs() {
 // スプレッドシート管理
 // ============================================================
 function getOrCreateSpreadsheet_() {
-  const props = PropertiesService.getScriptProperties();
-  const id = props.getProperty("SPREADSHEET_ID");
-  if (id) {
-    try { return SpreadsheetApp.openById(id); } catch (e) { /* 作り直す */ }
-  }
-  const ss = SpreadsheetApp.create("AI案件ダッシュボード");
-  props.setProperty("SPREADSHEET_ID", ss.getId());
-  Logger.log("スプレッドシートを新規作成: " + ss.getUrl());
-  return ss;
+  return SpreadsheetApp.getActiveSpreadsheet();
 }
 
 function getOrCreateSheet_(ss, name) {
@@ -101,8 +98,9 @@ function getOrCreateSheet_(ss, name) {
     sheet.setFrozenRows(1);
     sheet.getRange(1, 1, 1, HEADERS.length).setFontWeight("bold");
     sheet.setColumnWidth(3, 380); // 案件名
-    sheet.setColumnWidth(8, 300); // URL
-    sheet.setColumnWidth(9, 260); // ヒット語
+    sheet.setColumnWidth(4, 170); // 優先度
+    sheet.setColumnWidth(9, 300); // URL
+    sheet.setColumnWidth(10, 260); // ヒット語
   }
   const def = ss.getSheetByName("シート1") || ss.getSheetByName("Sheet1");
   if (def && ss.getSheets().length > 1) ss.deleteSheet(def);
@@ -122,19 +120,40 @@ function prependRows_(sheet, rows) {
   sheet.getRange(2, 1, rows.length, HEADERS.length).setValues(rows);
 }
 
-/** 残日数で色分け。残3日以内=赤 / 4〜7日=オレンジ / 不明=グレー */
+/**
+ * 色分けルール（優先度を最優先で適用し、高単価・スキルアップ案件を一目で目立たせる）:
+ *   1. 優先度が「高単価×スキルアップ」「高単価」「スキルアップ」→ それぞれの色で塗る
+ *   2. 優先度「通常」の行だけ、残日数で赤（残3日以内）/オレンジ（4〜7日）/グレー（不明）に塗る
+ */
 function applyFormatting_(sheet) {
   const last = sheet.getLastRow();
   if (last < 2) return;
   const numRows = last - 1;
   const daysCol = HEADERS.indexOf("残日数") + 1;
+  const priorityCol = HEADERS.indexOf("優先度") + 1;
   const days = sheet.getRange(2, daysCol, numRows, 1).getValues();
+  const priorities = sheet.getRange(2, priorityCol, numRows, 1).getValues();
   const full = sheet.getRange(2, 1, numRows, HEADERS.length);
   full.setBackground(null).setFontColor(COLOR_NORMAL_TEXT);
 
   for (let i = 0; i < days.length; i++) {
-    const v = days[i][0];
     const row = sheet.getRange(2 + i, 1, 1, HEADERS.length);
+    const priority = String(priorities[i][0] || "");
+
+    if (priority.indexOf("高単価") !== -1 && priority.indexOf("スキルアップ") !== -1) {
+      row.setBackground(COLOR_PRIORITY_TOP).setFontColor(COLOR_NORMAL_TEXT);
+      continue;
+    }
+    if (priority.indexOf("高単価") !== -1) {
+      row.setBackground(COLOR_PRIORITY_HIGH).setFontColor(COLOR_NORMAL_TEXT);
+      continue;
+    }
+    if (priority.indexOf("スキルアップ") !== -1) {
+      row.setBackground(COLOR_PRIORITY_SKILL).setFontColor(COLOR_NORMAL_TEXT);
+      continue;
+    }
+
+    const v = days[i][0];
     if (v === "" || v === null || isNaN(Number(v))) {
       row.setBackground(COLOR_UNKNOWN).setFontColor(COLOR_UNKNOWN_TEXT);
     } else {

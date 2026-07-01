@@ -66,6 +66,32 @@ def test_is_open_false():
     assert F.is_open("", "この募集は2024年に終了しました") is False
 
 
+def test_contains_closed_marker_true():
+    assert F.contains_closed_marker("募集終了") is True
+    assert F.contains_closed_marker("この案件は受付終了しました") is True
+
+def test_contains_closed_marker_false():
+    assert F.contains_closed_marker("あと3日 AI開発の募集です") is False
+    assert F.contains_closed_marker("") is False
+
+
+# ------------------------------------------------------------
+# 残り時間（hours_left）
+# ------------------------------------------------------------
+def test_hours_left_from_hours():
+    assert F.hours_left("あと3時間") == 3.0
+
+def test_hours_left_from_days():
+    assert F.hours_left("あと2日") == 48.0
+
+def test_hours_left_today_is_zero():
+    assert F.hours_left("本日締切") == 0.0
+
+def test_hours_left_none():
+    assert F.hours_left("") is None
+    assert F.hours_left("特に締切表記なし") is None
+
+
 # ------------------------------------------------------------
 # 正社員求人除外
 # ------------------------------------------------------------
@@ -192,6 +218,26 @@ def test_include_unknown_price_kept():
     ))
     assert ok is True, why  # KEEP_UNKNOWN_PRICE=True のため残る
 
+def test_exclude_deadline_in_1_hour():
+    # 締切まで1時間しかない → 応募に間に合わないので除外
+    ok, why = F.should_include(_job(
+        title="生成AIチャットボット開発",
+        reward_text="固定報酬制 200,000円",
+        deadline_text="あと1時間",
+        body_text="ChatGPT APIを使った社内向けボット",
+    ))
+    assert ok is False and "間近" in why
+
+def test_include_deadline_several_hours():
+    # 締切まで数時間（MIN_HOURS_LEFT以上）あれば残す
+    ok, why = F.should_include(_job(
+        title="生成AIチャットボット開発",
+        reward_text="固定報酬制 200,000円",
+        deadline_text="あと5時間",
+        body_text="ChatGPT APIを使った社内向けボット",
+    ))
+    assert ok is True, why
+
 def test_exclude_task():
     ok, why = F.should_include(_job(
         title="AIツールの動作チェック（タスク）",
@@ -201,6 +247,26 @@ def test_exclude_task():
         job_type_label="タスク",
     ))
     assert ok is False and why == "タスク形式"
+
+
+# ------------------------------------------------------------
+# 優先度（compute_priority）
+# ------------------------------------------------------------
+def test_priority_high_pay_and_skill_up():
+    label, score = F.compute_priority("fixed", 200_000, "生成AIチャットボット開発", "ChatGPT API開発")
+    assert "高単価" in label and "スキルアップ" in label and score == 3
+
+def test_priority_high_pay_only():
+    label, score = F.compute_priority("fixed", 200_000, "庭の手入れ代行", "植木剪定")
+    assert label == "🔥高単価" and score == 2
+
+def test_priority_skill_up_only():
+    label, score = F.compute_priority("fixed", 30_000, "生成AI動画のシナリオ作成", "台本・構成案")
+    assert label == "⭐スキルアップ" and score == 1
+
+def test_priority_normal():
+    label, score = F.compute_priority("hourly", 1_200, "データ入力代行", "Excelへの転記作業")
+    assert label == "通常" and score == 0
 
 
 # ------------------------------------------------------------
@@ -220,6 +286,8 @@ def test_build_record_fields():
     assert rec["残日数"] == 2
     assert rec["ソース"] == "crowdworks"
     assert "シナリオ" in rec["ヒット語"] or "ディレクション" in rec["ヒット語"]
+    assert rec["優先度"] == "🔥⭐高単価×スキルアップ"  # 上限15万円で高単価ラインに到達
+    assert rec["優先スコア"] == 3
 
 
 if __name__ == "__main__":

@@ -29,15 +29,20 @@ import filters as F
 # ============================================================
 # CrowdWorks: 新着順の全件ページを起点にして filters で絞る方式。
 #   カテゴリのslug指定に依存しないぶん壊れにくい（毎日回すので新着数ページで十分）。
+#   hide_expired=true … 実サイトの「募集終了を隠す」チェックボックスと同じパラメータ。
+#   実測で確認済み: 該当数が 350,818件 → 8,408件 に激減する（＝募集終了を確実に除外）。
+#   ※ 当初案の keep_open=1 は CrowdWorks に存在しないパラメータで、
+#      付けても何も起こらない（サーバ側で無視される）ため不採用。
 CW_TARGETS = [
-    "https://crowdworks.jp/public/jobs?order=new",
+    "https://crowdworks.jp/public/jobs?hide_expired=true&order=new",
 ]
 # Lancers: 募集中(open=1)の一覧を新着順で。こちらも filters で絞る。
+#   open=1 は実測で動作確認済み（外すと「募集終了」バッジ付きカードが混入することを確認）。
 LANCERS_TARGETS = [
     "https://www.lancers.jp/work/search?open=1&sort=started",
 ]
 
-MAX_PAGES = 6          # 1ターゲットあたり最大ページ数（毎日実行なので浅くてよい）
+MAX_PAGES = 12         # 1ターゲットあたり最大ページ数（母数確保のため広めに巡回）
 CARD_WAIT_MS = 12_000  # カード描画待ちのタイムアウト
 PER_PAGE_SLEEP = 1.2   # ページ間の待機（相手サーバへの礼儀＆bot検知回避）
 
@@ -49,11 +54,14 @@ SEEN_FILE = Path("seen_urls.json")
 DEBUG_FILE = Path("debug_first_card.txt")
 
 # サイトごとのカード/リンク セレクタ候補（上から順に試す）
+# lancers の .p-search-job-media は実サイトのDOMを直接確認して追加した実クラス名
+# （2026-07時点。CSS Modulesでハッシュ化されているcrowdworks側は安定クラス名が
+#  取れないため、汎用セレクタ＋リンク有無フィルタでのフォールバックに頼る設計のまま）。
 CARD_SELECTORS = {
     "crowdworks": ["li.job_offering", ".c-job-list__item",
                    "[data-testid='job-list-item']", "article", "li"],
-    "lancers":    [".p-search-job__item", ".c-media", "[data-qa='job-item']",
-                   "article", "li"],
+    "lancers":    [".p-search-job-media", ".p-search-job__item", ".c-media",
+                   "[data-qa='job-item']", "article", "li"],
 }
 LINK_SELECTORS = {
     "crowdworks": "a[href*='/public/jobs/']",
@@ -66,6 +74,16 @@ BASE_URL = {
 DETAIL_HINT = {
     "crowdworks": "/public/jobs/",
     "lancers":    "/work/detail/",
+}
+
+# 募集終了バッジのセレクタ（実サイトのDOMで確認済み）。
+# lancers: 実際に .p-search-job-media__time--end / --open の2種類のクラスで
+#   募集中/募集終了が切り替わることをDOM調査で確認済み（テキストだけに頼らない物理検知）。
+# crowdworks: 一覧ページのカードに恒常的なバッジ用クラス名が確認できなかったため
+#   空リスト＝テキストマーカー検知（contains_closed_marker）のみで対応。
+CLOSED_BADGE_SELECTORS = {
+    "crowdworks": [],
+    "lancers": [".p-search-job-media__time--end"],
 }
 
 
@@ -105,6 +123,15 @@ async def card_to_job(page, card, source: str, fetched_at: str, seen: set):
 
     title = (await link.inner_text()).strip()
     card_text = (await card.inner_text()).strip()
+
+    # 募集終了カードを should_include に回す前に物理的に除外する
+    # （① CSSバッジで確定検知できるサイトはバッジ優先、② それ以外は全文のテキストマーカーで検知）
+    for badge_sel in CLOSED_BADGE_SELECTORS.get(source, []):
+        if await card.query_selector(badge_sel):
+            return None
+    if F.contains_closed_marker(card_text):
+        return None
+
     if not title or len(title) < 4:
         # リンクテキストが空なら、カード内の見出しっぽい最初の行をタイトルに
         first_line = next((l.strip() for l in card_text.splitlines() if l.strip()), "")
@@ -242,6 +269,9 @@ async def main():
             print(f"[lancers] 収集中に例外: {e}")
 
         await browser.close()
+
+    # 新着は優先スコアが高い順（高単価×スキルアップが目立つように）
+    all_new.sort(key=lambda r: r.get("優先スコア", 0), reverse=True)
 
     # 新着を先頭に結合し、URLで重複排除
     merged = all_new + existing
