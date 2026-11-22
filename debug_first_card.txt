@@ -1,0 +1,8 @@
+# source=lancers url=https://www.lancers.jp/work/search?open=1&sort=started
+# selector=li
+
+---- innerText ----
+ランサーズ
+
+---- outerHTML ----
+<li>ランサーズ</li>
